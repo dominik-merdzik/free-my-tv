@@ -93,8 +93,12 @@ final class Homelab {
             } catch (Exception | StackOverflowError e) {   // never a crash: 3 in 5 minutes send the TV back to stock
                 failed = true;
                 String error = e.getClass().getSimpleName() + ": " + e.getMessage();
-                if (!error.equals(lastError)) AppLog.w("homelab: " + error);   // once, not every minute
-                lastError = error;
+                // Once, not every minute. Android's connect errors name the TV's port, new on every try ("... from
+                // /10.0.0.218 (port 43822) after 5000ms"), so what comes from there on doesn't make it another error.
+                int from = error.indexOf(" from ");
+                String key = from < 0 ? error : error.substring(0, from);
+                if (!key.equals(lastError)) AppLog.w("homelab: " + error);
+                lastError = key;
             } finally {
                 fetching = false;
                 staleShown = stale();
