@@ -37,7 +37,6 @@
     "deny": [
       "Bash(git push origin main:*)",
       "Bash(git push --force:*)",
-      "Bash(gh pr merge:*)",
       "Bash(adb shell pm uninstall:*)",
       "Bash(adb shell pm disable:*)",
       "Bash(adb shell pm disable-user:*)",
