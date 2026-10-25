@@ -1857,10 +1857,14 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             labNames[i] = TextUtils.ellipsize(d.nodes.get(i).name, fitPaint, names, TextUtils.TruncateAt.END).toString();
         }
         fitPaint.set(labTitle);
-        labTitleText = TextUtils.ellipsize(Ui.tr("Homelab"), fitPaint, names, TextUtils.TruncateAt.END).toString();
+        // "Stale" is the word that says the numbers are frozen: it keeps its room, and the title is cut first.
+        String staleWord = d == null || !stale ? "" : Ui.tr("Stale");
+        float staleW = staleWord.isEmpty() ? 0 : labTitle.measureText(staleWord) + 14 * k;
+        labTitleText = TextUtils.ellipsize(Ui.tr("Homelab"), fitPaint, Math.max(0, names - staleW),
+                TextUtils.TruncateAt.END).toString();
         labStaleX = x + labTitle.measureText(labTitleText) + 14 * k;
-        labStaleText = d == null || !stale ? "" : TextUtils.ellipsize(Ui.tr("Stale"), fitPaint,
-                Math.max(0, x + names - labStaleX), TextUtils.TruncateAt.END).toString();
+        labStaleText = TextUtils.ellipsize(staleWord, fitPaint, Math.max(0, x + names - labStaleX),
+                TextUtils.TruncateAt.END).toString();
         fitPaint.set(labFoot);
         // No answer yet; or one where no node answered, with the aggregator's reason.
         String note = d == null ? Ui.tr("No homelab data right now.") : labRows == 0 ? d.error : "";
