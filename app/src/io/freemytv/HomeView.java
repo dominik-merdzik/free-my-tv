@@ -1792,7 +1792,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private int labGeneration, labRows;
     private float labLeft, labRight, labStaleX, labCpuX, labRamX, labUpsX, labSepX, labTankX;
     private String labTitleText = "", labStaleText = "", labCpu = "", labRam = "", labNote = "";
-    private String labGuests = "", labUps = "", labTank = "";
+    private String labGuests = "", labUps = "", labTank = "", labSep = "";
     private final String[] labNames = new String[LAB_ROWS], labRowCpu = new String[LAB_ROWS];
     private final String[] labRowRam = new String[LAB_ROWS], labRowTemp = new String[LAB_ROWS];
     private final boolean[] labOffline = new boolean[LAB_ROWS], labNoTemp = new boolean[LAB_ROWS];
@@ -1869,21 +1869,27 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         // No answer yet; or one where no node answered, with the aggregator's reason.
         String note = d == null ? Ui.tr("No homelab data right now.") : labRows == 0 ? d.error : "";
         labNote = TextUtils.ellipsize(note, fitPaint, right - x, TextUtils.TruncateAt.END).toString();
-        labGuests = labUps = labTank = "";
+        labGuests = labUps = labTank = labSep = "";
         if (d == null) return;
         // The footer: the guests on the left, the UPS and the pool on the right. A guest that isn't running matters
-        // more than the UPS's minutes, so they give it their room first; what still doesn't fit is cut.
+        // more than the UPS's minutes and the pool, so they give it their room first; what still doesn't fit is cut.
         String guests = Homelab.guests(d);
         labGuestsDown = !d.notRunning.isEmpty();
         if (labGuestsDown) guests = (guests.isEmpty() ? "" : guests + " · ") + TextUtils.join(", ", d.notRunning);
         labOnBattery = d.onBattery;
         labTank = Homelab.tank(d);
         labUps = Homelab.ups(d, true);
-        float sep = labFoot.measureText(" · "), tankW = labFoot.measureText(labTank);
+        labSep = " · ";
+        float sep = labFoot.measureText(labSep), tankW = labFoot.measureText(labTank);
         float room = right - x - tankW - sep - labFoot.measureText(labUps) - gap;
         if (labFoot.measureText(guests) > room) {
             labUps = Homelab.ups(d, false);
             room = right - x - tankW - sep - labFoot.measureText(labUps) - gap;
+        }
+        if (labFoot.measureText(guests) > room) {
+            labTank = labSep = "";
+            tankW = sep = 0;
+            room = right - x - labFoot.measureText(labUps) - gap;
         }
         labTankX = right - tankW;
         labSepX = labTankX - sep;
@@ -1928,7 +1934,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         labFoot.setColor(labOnBattery ? red : soft);
         c.drawText(labUps, labUpsX, foot, labFoot);
         labFoot.setColor(soft);
-        c.drawText(" · ", labSepX, foot, labFoot);
+        c.drawText(labSep, labSepX, foot, labFoot);
         c.drawText(labTank, labTankX, foot, labFoot);
     }
 
