@@ -294,3 +294,7 @@ entries; its system pieces are in `PROTECTED`. USB debugging opens ADB on 5555 t
   *Original* can bring it back.
 - Don't change the TV's picture, sound, network or account settings.
 - Keep the way back working: the *Original* mode and the watchdog.
+
+## This fork
+
+@HOMELAB.md
