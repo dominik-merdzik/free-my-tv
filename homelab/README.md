@@ -86,11 +86,12 @@ Portainer builds from `main`, so merge the aggregator PRs first.
 **Check:**
 - Containers → `homelab-aggregator`: *running*, then *healthy* after about 30 s.
 - Its logs: `listening on :8099; Proxmox via 10.0.0.133:8006, …` and no error lines.
-- From any machine on the LAN:
+- On LXC 100 itself (the port is bound to loopback, so it isn't reachable from the LAN; that's the point):
   ```bash
-  curl -s http://10.0.0.100:8099/healthz      # ok
-  curl -s http://10.0.0.100:8099/stats | jq '{source_node, errors, pve_temp: .nodes[0].temp_c}'
+  curl -s http://127.0.0.1:8099/healthz      # ok
+  curl -s http://127.0.0.1:8099/stats | jq '{source_node, errors, pve_temp: .nodes[0].temp_c}'
   ```
+  (No `jq` there? Drop the `| jq …` and read the raw JSON, or check through NPM after step 3.)
   `errors` should be `[]` and `pve_temp` a number. A number proves the container sees pve's sensors.
 - `proxmox: no node answered (… HTTP 401 …)` in `errors` means the secret is wrong: fix the variable in the
   stack (Editor tab) and *Update the stack*.
@@ -98,11 +99,12 @@ Portainer builds from `main`, so merge the aggregator PRs first.
 ### 3. Add the proxy host in NPM
 
 *Why HTTPS:* Android 9+ refuses plain HTTP by default, and the app keeps that rule. NPM ends TLS with the
-Let's Encrypt certificate and passes the request on to the container over the LAN.
+Let's Encrypt certificate and passes the request to the container on `127.0.0.1:8099`. That works because NPM
+runs with host networking on LXC 100: its "localhost" is the host's, where the port is published.
 
 1. **Hosts → Proxy Hosts → Add Proxy Host.**
-   - Domain Names: `stats.dominiktm.net`
-   - Scheme `http`, Forward Hostname / IP `10.0.0.100`, Forward Port `8099`
+   - Domain Names: `labstats.dominiktm.net`
+   - Scheme `http`, Forward Hostname / IP `127.0.0.1`, Forward Port `8099`
    - Block Common Exploits: on. Cache Assets and Websockets Support: off.
 2. **SSL tab:** pick the existing `*.dominiktm.net` Let's Encrypt certificate (DNS challenge). If there isn't
    one, *Request a new SSL Certificate* with *Use a DNS Challenge*: an HTTP challenge can't work for a name
@@ -112,9 +114,9 @@ Let's Encrypt certificate and passes the request on to the container over the LA
 
 **Check** (from the LAN or over Tailscale, and without `-k`: the certificate has to be trusted as it is):
 ```bash
-curl -s https://stats.dominiktm.net/stats | jq '.version, .errors'     # 1, []
-curl -s -o /dev/null -w '%{http_code}\n' http://stats.dominiktm.net/stats   # 301: Force SSL works
-echo | openssl s_client -connect stats.dominiktm.net:443 -servername stats.dominiktm.net 2>/dev/null \
+curl -s https://labstats.dominiktm.net/stats | jq '.version, .errors'     # 1, []
+curl -s -o /dev/null -w '%{http_code}\n' http://labstats.dominiktm.net/stats   # 301: Force SSL works
+echo | openssl s_client -connect labstats.dominiktm.net:443 -servername labstats.dominiktm.net 2>/dev/null \
   | openssl x509 -noout -issuer -enddate                                  # Let's Encrypt, a future date
 ```
 
@@ -124,5 +126,5 @@ echo | openssl s_client -connect stats.dominiktm.net:443 -servername stats.domin
   again and rebuilds.
 - **Roll back / remove:** stop or delete the stack. Nothing else depends on it; the TV card just shows
   *stale*.
-- Port 8099 is also open on the LAN in plain HTTP. That's fine for a read-only summary with no secrets in it.
-  If you'd rather not have it, drop the `ports:` line and put the container on NPM's Docker network instead.
+- Port 8099 is published on `127.0.0.1` only, so plain HTTP never leaves LXC 100. If NPM ever stops using host
+  networking, it can't reach loopback any more: put both containers on one Docker network instead.

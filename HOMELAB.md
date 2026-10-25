@@ -43,7 +43,7 @@ design decisions and commands, briefly and in plain terms, as you work.
 | Storage `tank` | ZFS pool on pve, read from `/cluster/resources` | `tank_used_pct` is the **whole pool** (every dataset on it: guest disks, backups…), not LXC 100's `/data` subvolume. That's why it reads ~43 % while `df /data` inside LXC 100 shows ~27 % |
 | NUT (UPS) | `10.0.0.133:3493`, UPS name `cp1500` | Plaintext protocol; `LIST VAR`/`GET VAR` need no login. Unavailable whenever pve is down — that's expected |
 | Aggregator host | **LXC 100** (10.0.0.100), Docker via Portainer | **You cannot reach Docker on LXC 100 from here.** Deployment is a human step (§7) |
-| Reverse proxy | NPM on LXC 100 | Will front the aggregator as `https://labstats.dominiktm.net` (LAN/Tailscale only — wildcard DNS → 10.0.0.100) |
+| Reverse proxy | NPM on LXC 100, **host networking** | Fronts the aggregator as `https://labstats.dominiktm.net` (LAN/Tailscale only — wildcard DNS → 10.0.0.100). The aggregator publishes `127.0.0.1:8099` only; NPM forwards there |
 
 Guests: 100 `lxc-docker`, 102 `lxc-tailscale`, 103 `lxc-webstack`, 104 `lxc-claude` — all on pve.
 **Discover guests from the API; never hardcode this list.**

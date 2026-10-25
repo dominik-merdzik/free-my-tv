@@ -25,8 +25,9 @@ services:
       HWMON_NODE: pve
       TZ: America/Toronto
     ports:
-      # NPM (on this same host) proxies https://stats.dominiktm.net to 10.0.0.100:8099.
-      - "8099:8099"
+      # Loopback only: plain HTTP never reaches the LAN. NPM runs with host networking on this same host, so it
+      # still reaches 127.0.0.1:8099 and serves it as https://labstats.dominiktm.net.
+      - "127.0.0.1:8099:8099"
     # The aggregator only reads: no writable filesystem, no Linux capabilities, no way to gain privileges.
     read_only: true
     cap_drop: [ALL]
