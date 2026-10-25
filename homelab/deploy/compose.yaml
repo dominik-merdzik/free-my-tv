@@ -1,0 +1,45 @@
+# Portainer stack for LXC 100 (lxc-docker). Deploy as a *Repository* stack pointing at this file: Portainer clones
+# the repo and builds the image from ../aggregator. See homelab/README.md, "Deploy".
+#
+# Set in Portainer's "Environment variables" for the stack (never in this file, never in git):
+#   PVE_TOKEN_SECRET   the monitor@pve!tv token's secret
+name: homelab
+
+services:
+  aggregator:
+    build: ../aggregator
+    image: homelab-aggregator:local
+    container_name: homelab-aggregator
+    restart: unless-stopped
+    environment:
+      PVE_TOKEN_ID: "monitor@pve!tv"
+      PVE_TOKEN_SECRET: ${PVE_TOKEN_SECRET:?set PVE_TOKEN_SECRET in the stack's environment variables}
+      # Every node can answer for the whole cluster; tried in this order.
+      PVE_HOSTS: "10.0.0.133:8006,10.0.0.134:8006,10.0.0.135:8006"
+      PVE_STORAGE: tank
+      NUT_ADDR: "10.0.0.133:3493"
+      NUT_UPS: cp1500
+      # LXC 100 is a guest on pve, and /sys/class/hwmon isn't namespaced: the sensors this container sees are pve's.
+      # Docker already mounts /sys read-only in every container, so no volume is needed. Move LXC 100 to another
+      # node and this must follow it.
+      HWMON_NODE: pve
+      TZ: America/Toronto
+    ports:
+      # Loopback only: plain HTTP never reaches the LAN. NPM runs with host networking on this same host, so it
+      # still reaches 127.0.0.1:8099 and serves it as https://labstats.dominiktm.net.
+      - "127.0.0.1:8099:8099"
+    # The aggregator only reads: no writable filesystem, no Linux capabilities, no way to gain privileges.
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 64m
+    logging:
+      driver: json-file
+      options: { max-size: "1m", max-file: "3" }
+    # The image has no shell or curl, so the binary asks its own /healthz. Portainer shows "healthy" or "unhealthy".
+    healthcheck:
+      test: ["CMD", "/aggregator", "-healthcheck"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3

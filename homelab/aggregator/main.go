@@ -17,7 +17,11 @@ import (
 
 func main() {
 	envFile := flag.String("env", ".env", "file with KEY=value lines; real environment variables win")
+	health := flag.Bool("healthcheck", false, "ask the running server's /healthz and exit 0 if it answers ok (for Docker)")
 	flag.Parse()
+	if *health {
+		os.Exit(healthcheck(env("LISTEN", ":8099")))
+	}
 	if err := loadEnv(*envFile); err != nil && !os.IsNotExist(err) {
 		log.Fatalf("reading %s: %v", *envFile, err)
 	}
@@ -65,6 +69,21 @@ func main() {
 	log.Printf("listening on %s; Proxmox via %s", addr, strings.Join(pve.Hosts, ", "))
 	srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	log.Fatal(srv.ListenAndServe())
+}
+
+// healthcheck is Docker's HEALTHCHECK: the image has no shell or curl, so the binary asks itself.
+func healthcheck(listen string) int {
+	_, port, _ := strings.Cut(listen, ":")
+	c := &http.Client{Timeout: 3 * time.Second}
+	res, err := c.Get("http://127.0.0.1:" + port + "/healthz")
+	if err != nil {
+		return 1
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		return 1
+	}
+	return 0
 }
 
 func env(key, fallback string) string {
