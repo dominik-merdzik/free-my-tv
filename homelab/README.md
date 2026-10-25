@@ -53,3 +53,76 @@ PVE_HOSTS=10.0.0.133:8006,10.0.0.134:8006,10.0.0.135:8006 TZ=America/Toronto go 
 curl -s localhost:8099/stats | jq
 curl -s localhost:8099/healthz      # ok
 ```
+
+## The image
+
+`aggregator/Dockerfile` builds in two stages: a Go image compiles a static binary, which then goes alone into
+`distroless/static:nonroot`. That image has no shell or package manager and runs as uid 65532, so there's very
+little inside to attack. The result is about 10 MB. `.dockerignore` lets only the Go files and the CA into the
+build, so the `.env` with the token can never end up in an image layer. The healthcheck is the binary itself
+(`/aggregator -healthcheck`), since there's no curl in the image.
+
+## Deploy (LXC 100, Portainer + NPM)
+
+Portainer builds the image straight from this public repo (a *Repository* stack), so there's no registry to run.
+The token's secret goes into the stack's environment variables in Portainer, never into git.
+
+### 1. Merge to `main`
+
+Portainer builds from `main`, so merge the aggregator PRs first.
+
+### 2. Create the stack in Portainer
+
+1. **Stacks → Add stack.** Name: `homelab`.
+2. **Build method: Repository.**
+   - Repository URL: `https://github.com/dominik-merdzik/free-my-tv`
+   - Repository reference: `refs/heads/main`
+   - Compose path: `homelab/deploy/compose.yaml`
+   - Authentication: off (the repo is public). GitOps updates: off for now.
+3. **Environment variables → Add an environment variable:** name `PVE_TOKEN_SECRET`, value = the secret
+   (it's in `homelab/aggregator/.env` on 104; copy it from there yourself).
+4. **Deploy the stack.** The first build takes a minute (it downloads the Go image).
+
+**Check:**
+- Containers → `homelab-aggregator`: *running*, then *healthy* after about 30 s.
+- Its logs: `listening on :8099; Proxmox via 10.0.0.133:8006, …` and no error lines.
+- From any machine on the LAN:
+  ```bash
+  curl -s http://10.0.0.100:8099/healthz      # ok
+  curl -s http://10.0.0.100:8099/stats | jq '{source_node, errors, pve_temp: .nodes[0].temp_c}'
+  ```
+  `errors` should be `[]` and `pve_temp` a number. A number proves the container sees pve's sensors.
+- `proxmox: no node answered (… HTTP 401 …)` in `errors` means the secret is wrong: fix the variable in the
+  stack (Editor tab) and *Update the stack*.
+
+### 3. Add the proxy host in NPM
+
+*Why HTTPS:* Android 9+ refuses plain HTTP by default, and the app keeps that rule. NPM ends TLS with the
+Let's Encrypt certificate and passes the request on to the container over the LAN.
+
+1. **Hosts → Proxy Hosts → Add Proxy Host.**
+   - Domain Names: `stats.dominiktm.net`
+   - Scheme `http`, Forward Hostname / IP `10.0.0.100`, Forward Port `8099`
+   - Block Common Exploits: on. Cache Assets and Websockets Support: off.
+2. **SSL tab:** pick the existing `*.dominiktm.net` Let's Encrypt certificate (DNS challenge). If there isn't
+   one, *Request a new SSL Certificate* with *Use a DNS Challenge*: an HTTP challenge can't work for a name
+   that only resolves on the LAN. Turn on **Force SSL** and **HTTP/2 Support**. Leave HSTS off for now: browsers
+   remember it for months.
+3. **Save.**
+
+**Check** (from the LAN or over Tailscale, and without `-k`: the certificate has to be trusted as it is):
+```bash
+curl -s https://stats.dominiktm.net/stats | jq '.version, .errors'     # 1, []
+curl -s -o /dev/null -w '%{http_code}\n' http://stats.dominiktm.net/stats   # 301: Force SSL works
+echo | openssl s_client -connect stats.dominiktm.net:443 -servername stats.dominiktm.net 2>/dev/null \
+  | openssl x509 -noout -issuer -enddate                                  # Let's Encrypt, a future date
+```
+
+### Updating and rolling back
+
+- **Update:** after a merge to `main`, Stacks → `homelab` → **Pull and redeploy**. Portainer clones the repo
+  again and rebuilds.
+- **Roll back / remove:** stop or delete the stack. Nothing else depends on it; the TV card just shows
+  *stale*.
+- Port 8099 is also open on the LAN in plain HTTP. That's fine for a read-only summary with no secrets in it.
+  If you'd rather not have it, drop the `ports:` line and put the container on NPM's Docker network instead.

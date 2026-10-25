@@ -1,0 +1,5 @@
+# Only the source and the CA go into the build. Above all, never the .env with the token.
+*
+!*.go
+!go.mod
+!certs/pve-root-ca.pem
