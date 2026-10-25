@@ -26,7 +26,7 @@ design decisions and commands, briefly and in plain terms, as you work.
 | | |
 |---|---|
 | Name / IP | "Basement TV" · **10.0.0.218** (DHCP reservation in UniFi) · on **Wi-Fi** (`wlan0`) |
-| Platform | TCL Google TV, **Android 11** (no Android 13 shaders → plain-fill rendering path) |
+| Platform | TCL Google TV, **Android 11** → `Ui.LEGACY` (Android 8–11): no AGSL shaders (13+), drawer cards drawn into cached bitmaps (`Snapshot`), pre-blurred shadows |
 | ADB | `adb connect 10.0.0.218:5555` — `dev`'s key (`~/.android/adbkey`) is already approved ("Always allow") |
 | App | Free My TV, package `io.freemytv`, **currently the active home screen** |
 | Signing | `freemytv.keystore` in the repo root. **Never delete, regenerate, move, or commit it.** Every update must be signed with it; losing it means uninstall + reinstall |
@@ -56,6 +56,9 @@ Guests: 100 `lxc-docker`, 102 `lxc-tailscale`, 103 `lxc-webstack`, 104 `lxc-clau
   If `nct6795` is ever used, only trust labelled CPU/system channels.
 - **pve2 / pve3: no source yet.** Emit `null`; the card shows "—". (Planned: Beszel agents.)
 - This trick only works because the aggregator runs in a guest **on pve**. Document that in code.
+  (It also works on 104 for the same reason: `go run` there shows pve's real temperatures.)
+- **Also read** (optional extras on pve's row): `nvme` → label `Composite` (`nvme_temp_c`), `r8169*` → its one
+  `temp1_input` (`nic_temp_c`). `HWMON_NODE` names the node these belong to (default `pve`).
 
 ## 4. Architecture
 
@@ -106,20 +109,30 @@ Numbers are **pre-computed for display**: integer percents, GB to one decimal. T
 
 ## 6. The TV card
 
-- Lives in the drawer where the **crypto card** goes (`HomeData.java` / `HomeView.java`). Crypto is
-  off on this TV (`show_crypto=false`).
+- Lives in the drawer where the **crypto card** goes (`HomeView.java`; fetching in a new `Homelab.java`,
+  called from `HomeData`'s 1-minute tick). Crypto is off on this TV (`show_crypto=false`); if both are on,
+  Homelab takes the drawer slot and crypto stays in the top-right quotes.
 - New `config.properties` keys (add to `config.example.properties` with comments):
   `show_homelab=false` (default off — keep upstream behaviour unchanged) and
-  `homelab_url=` (empty by default).
-- Layout: overall CPU/RAM at top, one row per node (CPU, RAM, temp or "—"), then guests, then UPS
-  and tank. Match the existing visual style. Android 11 → the plain-fill path; test that path.
+  `homelab_url=` (empty by default). **The owner sets them in `config.properties`** (Claude can't read it):
+  `show_homelab=true`, `homelab_url=https://stats.dominiktm.net/stats`.
+- **The drawer card is 300 px tall** (`CARDS_H`, ~4 rows), so it's a summary: a top line (title, overall
+  CPU/RAM, stale), one row per node (CPU, RAM, temp or "—"), and a footer (guests running/total, naming any that
+  isn't running · UPS charge and runtime · tank). Don't make the card taller: that reshapes upstream's drawer.
+- **Per-guest detail** is a separate full-screen Homelab view (its own Activity, Phase 4), opened with OK on the
+  card: one row per guest, node temps including NVMe and NIC.
+- Android 11 is `Ui.LEGACY`: the card's content is a cached bitmap keyed by `drawerCardsKey()`. That key must
+  include the homelab data's time, or the numbers never change on screen. Test that path.
 - Poll every **60 s, only while the home screen/drawer is visible.** This TV is slow; don't run
   timers in the background.
 - If `updated` is older than **3 minutes**, show the card as **stale** (dimmed + "stale"). A frozen
   number must never look like a healthy one.
 - Network/parse failure → keep last good data, mark stale. Never crash the home screen — the
   watchdog reverts to stock after 3 crashes in 5 minutes.
-- Add UI strings to `app/assets/i18n/en.json` and run `python3 tools/translate.py` to list gaps.
+- UI strings: write `Ui.tr("…")` in the code, then run `python3 tools/translate.py`. It **generates**
+  `en.json` from the code (never edit that by hand) and lists what each language lacks. `--check` (run by CI)
+  fails if **any of the 25 catalogues** lacks a key, so every new string goes into all 25, by hand. Keep the
+  set small; node and guest names are data, not strings.
 
 ## 7. Repo layout & workflow
 
@@ -128,7 +141,7 @@ homelab/
   aggregator/          Go module (stdlib only unless there's a real reason)
     main.go …
     certs/pve-root-ca.pem   (public cert — safe to commit)
-    .env                    (gitignored — PVE_TOKEN_ID, PVE_TOKEN_SECRET)
+    .env                    (gitignored — PVE_TOKEN_ID, PVE_TOKEN_SECRET; other settings: see README)
     Dockerfile              (multi-stage → distroless/static or scratch, non-root)
   deploy/compose.yaml       Portainer stack for LXC 100
   README.md                 how it works + how to deploy
@@ -137,8 +150,9 @@ homelab/
 - **Branches + PRs.** Never commit directly to `main`. Small, reviewable commits.
 - **Keep upstream mergeable:** add new files rather than reshaping upstream ones; don't reformat
   code you didn't change. Sync with `git fetch upstream && git merge upstream/main` on a branch.
-- **Run the aggregator locally first:** `go run ./homelab/aggregator` on 104 against the live API
-  using `.env`, curl `localhost:8099/stats`, then ship.
+- **Run the aggregator locally first:** `cd homelab/aggregator && PVE_HOSTS=10.0.0.133:8006,10.0.0.134:8006,10.0.0.135:8006 go run .`
+  on 104 (the module's `go.mod` is in that folder, so `go run ./homelab/aggregator` from the root doesn't work;
+  the program loads `.env` itself), curl `localhost:8099/stats`, then ship. `go test ./...` there runs the tests.
 - **Deploy (v1, human):** you produce `compose.yaml` + exact Portainer steps; the human deploys on
   LXC 100 and creates the NPM host. Later we may move to GHCR + Portainer git-stack auto-update.
 
