@@ -349,6 +349,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             if (!running) return;
             wake();
             data.refreshIfStale();
+            data.refreshHomelab(homelabChanged);
             recs.refreshIfStale();
             checkNotices();
             updatePalette();
@@ -426,6 +427,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         data.addListener(this);
         recs.addListener(this);
         data.refreshIfStale();
+        data.refreshHomelab(homelabChanged);
         recs.refreshIfStale();
         Photos.importInbox(getContext(), ownReady);   // photos a computer just sent
         if (tvInputs != null) tvInputs.registerCallback(inputCallback, handler);
@@ -1514,7 +1516,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             x += tw + gap;
         }
         float cardsTop = CARDS_TOP * k, split = left + (right - left) * 0.585f;
-        boolean wx = Prefs.weather(), qt = Prefs.quotes() && HomeData.active().length > 0;
+        // This fork: the Homelab card takes the quotes card's place (HOMELAB.md §6).
+        boolean wx = Prefs.weather(), qt = Homelab.ON || Prefs.quotes() && HomeData.active().length > 0;
         // A card that is off gives its room to the other one.
         weatherCard.set(left, cardsTop, qt ? split - 16 * k : right, cardsTop + CARDS_H * k);
         quotesCard.set(wx ? split + 16 * k : left, cardsTop, right, cardsTop + CARDS_H * k);
@@ -1591,7 +1594,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         for (int i = 0; i < drawerItems.size(); i++) if (i != top) drawDrawerTile(c, i);
         if (top >= 0) drawDrawerTile(c, top);
         if (Prefs.weather()) drawWeatherCard(c, weatherCard);
-        if (Prefs.quotes() && HomeData.active().length > 0) drawQuotesCard(c, quotesCard);
+        if (Homelab.ON) drawHomelabCard(c, quotesCard);
+        else if (Prefs.quotes() && HomeData.active().length > 0) drawQuotesCard(c, quotesCard);
     }
 
     /** Square drawer button: symbol and name; an input with no device is dimmed. Focused: white, with dark text. */
@@ -1712,11 +1716,12 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
 
     /**
      * What the drawer cards show depends on: the data, the settings, the language, day or night, and the minute (the
-     * sunrise and sunset, "12 min ago").
+     * sunrise and sunset, "12 min ago"). This fork: also the Homelab answer's time and whether it's stale.
      */
     private String drawerCardsKey() {
         return data.weatherAt + "|" + data.pricesAt + "|" + Prefs.version + "|" + Ui.language + "|"
-                + Float.floatToIntBits(dark()) + "|" + System.currentTimeMillis() / 60_000;
+                + Float.floatToIntBits(dark()) + "|" + System.currentTimeMillis() / 60_000
+                + (Homelab.ON ? "|" + labAt + "|" + labStale : "");
     }
 
     /**
@@ -1771,6 +1776,156 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             changePaint.setColor(color);
             c.drawText(changeText[i], tmp.centerX(), mid + Ui.halfCap(changePaint), changePaint);
         }
+    }
+
+    // MARK: - Homelab card (this fork: HOMELAB.md §6), in the quotes card's place
+
+    /** The Homelab numbers changed or went stale (on the main thread). Only the drawer shows them. */
+    private final Runnable homelabChanged = () -> drawerDirty = true;
+    private final Snapshot homelabSnapshot = new Snapshot();
+    /** Node rows under the title: three as on the quotes card, a fourth squeezed in (TalkBack reads them all). */
+    private static final int LAB_ROWS = 4;
+    private Paint labFrom, labTitle, labName, labNum, labHead, labFoot;
+    private Homelab.Data labData;
+    private boolean labMade, labStale, labGuestsDown, labOnBattery;
+    private long labAt;
+    private int labGeneration, labRows;
+    private float labLeft, labRight, labStaleX, labCpuX, labRamX, labUpsX, labSepX, labTankX;
+    private String labTitleText = "", labStaleText = "", labCpu = "", labRam = "", labNote = "";
+    private String labGuests = "", labUps = "", labTank = "";
+    private final String[] labNames = new String[LAB_ROWS], labRowCpu = new String[LAB_ROWS];
+    private final String[] labRowRam = new String[LAB_ROWS], labRowTemp = new String[LAB_ROWS];
+    private final boolean[] labOffline = new boolean[LAB_ROWS], labNoTemp = new boolean[LAB_ROWS];
+
+    /** The homelab aggregator's numbers: overall CPU and RAM, a row per node, then the guests, the UPS and the pool. */
+    private void drawHomelabCard(Canvas c, RectF r) {
+        drawerCard(c, r);
+        refreshHomelab(r);
+        if (Ui.LEGACY) homelabSnapshot.draw(c, r, drawerCardsKey(), cc -> drawHomelab(cc, r));
+        else drawHomelab(c, r);
+    }
+
+    /**
+     * The card's text, measured and cut to fit. Made again only when the answer, its staleness, the language or the
+     * size changes, not on every frame of the drawer's focus animation.
+     */
+    private void refreshHomelab(RectF r) {
+        if (labFrom != cardText) {   // makePaints made new ones (another screen size)
+            labFrom = cardText;
+            labTitle = new Paint(cardTitle);
+            labName = new Paint(cardText);
+            labNum = new Paint(pricePaint);      // right-aligned
+            labHead = new Paint(cardDimRight);   // right-aligned
+            labFoot = new Paint(cardDim);
+            labMade = false;
+        }
+        Homelab.Data d = data.homelab.data;
+        boolean stale = data.homelab.stale(System.currentTimeMillis());
+        if (labMade && d == labData && stale == labStale && labGeneration == Ui.generation && labLeft == r.left
+                && labRight == r.right) return;
+        labMade = true;
+        labData = d;
+        labStale = stale;
+        labAt = d == null ? 0 : d.at;
+        labGeneration = Ui.generation;
+        labLeft = r.left;
+        labRight = r.right;
+        float x = r.left + 34 * k, right = r.right - 34 * k, gap = 28 * k;
+        // Columns from the right (temperature, RAM, CPU), each as wide as its widest text; the names get the rest.
+        labRows = d == null ? 0 : Math.min(d.nodes.size(), LAB_ROWS);
+        labCpu = d == null ? "" : Homelab.cpu(d.cpu);
+        labRam = d == null ? "" : Homelab.ram(d.mem);
+        float tempW = labNum.measureText(Homelab.celsius(100)), full = labNum.measureText(Homelab.percent(100));
+        float ramW = Math.max(full, labHead.measureText(labRam)), cpuW = Math.max(full, labHead.measureText(labCpu));
+        for (int i = 0; i < labRows; i++) {
+            Homelab.Node n = d.nodes.get(i);
+            labOffline[i] = !n.online;
+            labNoTemp[i] = n.temp == Homelab.NONE;
+            labRowCpu[i] = Homelab.percent(n.cpu);
+            labRowRam[i] = Homelab.percent(n.mem);
+            labRowTemp[i] = n.online ? Homelab.celsius(n.temp) : Ui.tr("Offline");   // an offline row spans the columns
+            if (!n.online) continue;
+            tempW = Math.max(tempW, labNum.measureText(labRowTemp[i]));
+            ramW = Math.max(ramW, labNum.measureText(labRowRam[i]));
+            cpuW = Math.max(cpuW, labNum.measureText(labRowCpu[i]));
+        }
+        labRamX = right - tempW - gap;
+        labCpuX = labRamX - ramW - gap;
+        float names = Math.max(0, labCpuX - cpuW - gap - x);
+        fitPaint.set(labName);
+        for (int i = 0; i < labRows; i++) {
+            labNames[i] = TextUtils.ellipsize(d.nodes.get(i).name, fitPaint, names, TextUtils.TruncateAt.END).toString();
+        }
+        fitPaint.set(labTitle);
+        labTitleText = TextUtils.ellipsize(Ui.tr("Homelab"), fitPaint, names, TextUtils.TruncateAt.END).toString();
+        labStaleX = x + labTitle.measureText(labTitleText) + 14 * k;
+        labStaleText = d == null || !stale ? "" : TextUtils.ellipsize(Ui.tr("Stale"), fitPaint,
+                Math.max(0, x + names - labStaleX), TextUtils.TruncateAt.END).toString();
+        fitPaint.set(labFoot);
+        // No answer yet; or one where no node answered, with the aggregator's reason.
+        String note = d == null ? Ui.tr("No homelab data right now.") : labRows == 0 ? d.error : "";
+        labNote = TextUtils.ellipsize(note, fitPaint, right - x, TextUtils.TruncateAt.END).toString();
+        labGuests = labUps = labTank = "";
+        if (d == null) return;
+        // The footer: the guests on the left, the UPS and the pool on the right. A guest that isn't running matters
+        // more than the UPS's minutes, so they give it their room first; what still doesn't fit is cut.
+        String guests = Homelab.guests(d);
+        labGuestsDown = !d.notRunning.isEmpty();
+        if (labGuestsDown) guests = (guests.isEmpty() ? "" : guests + " · ") + TextUtils.join(", ", d.notRunning);
+        labOnBattery = d.onBattery;
+        labTank = Homelab.tank(d);
+        labUps = Homelab.ups(d, true);
+        float sep = labFoot.measureText(" · "), tankW = labFoot.measureText(labTank);
+        float room = right - x - tankW - sep - labFoot.measureText(labUps) - gap;
+        if (labFoot.measureText(guests) > room) {
+            labUps = Homelab.ups(d, false);
+            room = right - x - tankW - sep - labFoot.measureText(labUps) - gap;
+        }
+        labTankX = right - tankW;
+        labSepX = labTankX - sep;
+        labUpsX = labSepX - labFoot.measureText(labUps);
+        labGuests = TextUtils.ellipsize(guests, fitPaint, Math.max(0, room), TextUtils.TruncateAt.END).toString();
+    }
+
+    private void drawHomelab(Canvas c, RectF r) {
+        float x = r.left + 34 * k, right = r.right - 34 * k, title = r.top + 54 * k;
+        // Stale: the numbers fade and an orange "Stale" says so. Down (a node, a guest, the UPS on battery): red.
+        float a = labStale ? 0.45f : 1;
+        int ink = Ui.alpha(drawerInk(0.95f), a), soft = Ui.alpha(tone(L_DIM, 0xADFFFFFF), a);
+        int red = Ui.alpha(tone(0xFFD70015, DOWN_COLOR), a);
+        labTitle.setColor(tone(L_DIM, 0xB3FFFFFF));
+        c.drawText(labTitleText, x, title, labTitle);
+        if (!labStaleText.isEmpty()) {
+            labTitle.setColor(tone(0xFFC93400, 0xFFFF9F0A));
+            c.drawText(labStaleText, labStaleX, title, labTitle);
+        }
+        labFoot.setColor(labData == null ? tone(L_DIM, 0xADFFFFFF) : soft);
+        if (!labNote.isEmpty()) c.drawText(labNote, x, r.top + 120 * k, labFoot);
+        if (labData == null) return;
+        labHead.setColor(Ui.alpha(tone(L_FAINT, 0x99FFFFFF), a));
+        c.drawText(labCpu, labCpuX, title, labHead);
+        c.drawText(labRam, labRamX, title, labHead);
+        float first = labRows > 3 ? 100 : 110, step = labRows > 3 ? 40 : 52;
+        for (int i = 0; i < labRows; i++) {
+            float base = r.top + (first + step * i) * k;
+            labName.setColor(labOffline[i] ? red : ink);
+            c.drawText(labNames[i], x, base, labName);
+            labNum.setColor(labOffline[i] ? red : ink);
+            if (!labOffline[i]) {
+                c.drawText(labRowCpu[i], labCpuX, base, labNum);
+                c.drawText(labRowRam[i], labRamX, base, labNum);
+                if (labNoTemp[i]) labNum.setColor(soft);
+            }
+            c.drawText(labRowTemp[i], right, base, labNum);
+        }
+        float foot = r.top + 266 * k;
+        labFoot.setColor(labGuestsDown ? red : soft);
+        c.drawText(labGuests, x, foot, labFoot);
+        labFoot.setColor(labOnBattery ? red : soft);
+        c.drawText(labUps, labUpsX, foot, labFoot);
+        labFoot.setColor(soft);
+        c.drawText(" · ", labSepX, foot, labFoot);
+        c.drawText(labTank, labTankX, foot, labFoot);
     }
 
     // MARK: - Focus
@@ -2565,7 +2720,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         for (int i = shelfFirst; i < Math.min(shelf.size(), shelfFirst + shelfVisible); i++) out.add(a11yId(Z_SHELF, i));
         for (int i = 0; i < drawerItems.size(); i++) out.add(a11yId(Z_DRAWER, i));
         if (drawerOpen && Prefs.weather()) out.add(a11yId(WIDGETS, 0));
-        if (drawerOpen && Prefs.quotes() && HomeData.active().length > 0) out.add(a11yId(WIDGETS, 1));
+        if (drawerOpen && (Homelab.ON || Prefs.quotes() && HomeData.active().length > 0)) out.add(a11yId(WIDGETS, 1));
     }
 
     private String a11yText(int id) {
@@ -2585,7 +2740,10 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
                 }
                 return label(shelf, i);
             case Z_DRAWER: return label(drawerItems, i);
-            case WIDGETS: return i == 0 ? weatherText() : quotesText();
+            case WIDGETS:
+                if (i == 0) return weatherText();
+                if (!Homelab.ON) return quotesText();
+                return Homelab.spoken(data.homelab.data, data.homelab.stale(System.currentTimeMillis()));
             default: return "";
         }
     }
@@ -2655,12 +2813,12 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         }
     }
 
-    /** The drawer's widgets that are on (0 weather, 1 quotes), with the drawer open. */
+    /** The drawer's widgets that are on (0 weather, 1 quotes or this fork's Homelab card), with the drawer open. */
     private List<Integer> widgets() {
         List<Integer> out = new ArrayList<>();
         if (!drawerOpen) return out;
         if (Prefs.weather()) out.add(0);
-        if (Prefs.quotes() && HomeData.active().length > 0) out.add(1);
+        if (Homelab.ON || Prefs.quotes() && HomeData.active().length > 0) out.add(1);
         return out;
     }
 
