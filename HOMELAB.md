@@ -40,9 +40,10 @@ design decisions and commands, briefly and in plain terms, as you work.
 | Proxmox cluster `satoru-cluster` | pve **10.0.0.133** · pve2 **.134** · pve3 **.135** — all `:8006` | **Any node answers cluster-wide API calls.** Try them in order; fail over |
 | Proxmox CA | `homelab/aggregator/certs/pve-root-ca.pem` | Cluster's self-signed root. Verify TLS against it — never `InsecureSkipVerify` |
 | API token | `monitor@pve!tv`, role **PVEAuditor** (read-only) | Secret lives in `homelab/aggregator/.env` (gitignored). Do not print it, echo it, or paste it into chat |
+| Storage `tank` | ZFS pool on pve, read from `/cluster/resources` | `tank_used_pct` is the **whole pool** (every dataset on it: guest disks, backups…), not LXC 100's `/data` subvolume. That's why it reads ~43 % while `df /data` inside LXC 100 shows ~27 % |
 | NUT (UPS) | `10.0.0.133:3493`, UPS name `cp1500` | Plaintext protocol; `LIST VAR`/`GET VAR` need no login. Unavailable whenever pve is down — that's expected |
 | Aggregator host | **LXC 100** (10.0.0.100), Docker via Portainer | **You cannot reach Docker on LXC 100 from here.** Deployment is a human step (§7) |
-| Reverse proxy | NPM on LXC 100 | Will front the aggregator as `https://stats.dominiktm.net` (LAN/Tailscale only — wildcard DNS → 10.0.0.100) |
+| Reverse proxy | NPM on LXC 100 | Will front the aggregator as `https://labstats.dominiktm.net` (LAN/Tailscale only — wildcard DNS → 10.0.0.100) |
 
 Guests: 100 `lxc-docker`, 102 `lxc-tailscale`, 103 `lxc-webstack`, 104 `lxc-claude` — all on pve.
 **Discover guests from the API; never hardcode this list.**
@@ -64,7 +65,7 @@ Guests: 100 `lxc-docker`, 102 `lxc-tailscale`, 103 `lxc-webstack`, 104 `lxc-clau
 
 ```
 Proxmox API (any node) ─┐
-NUT on pve :3493 ───────┼─► aggregator (Go, Docker on LXC 100, :8099) ─► NPM ─► https://stats.dominiktm.net/stats
+NUT on pve :3493 ───────┼─► aggregator (Go, Docker on LXC 100, :8099) ─► NPM ─► https://labstats.dominiktm.net/stats
 /sys/class/hwmon ───────┘                                                           ▲
                                                              TV polls every 60 s ───┘
 ```
@@ -115,7 +116,7 @@ Numbers are **pre-computed for display**: integer percents, GB to one decimal. T
 - New `config.properties` keys (add to `config.example.properties` with comments):
   `show_homelab=false` (default off — keep upstream behaviour unchanged) and
   `homelab_url=` (empty by default). **The owner sets them in `config.properties`** (Claude can't read it):
-  `show_homelab=true`, `homelab_url=https://stats.dominiktm.net/stats`.
+  `show_homelab=true`, `homelab_url=https://labstats.dominiktm.net/stats`.
 - **The drawer card is 300 px tall** (`CARDS_H`, ~4 rows), so it's a summary: a top line (title, overall
   CPU/RAM, stale), one row per node (CPU, RAM, temp or "—"), and a footer (guests running/total, naming any that
   isn't running · UPS charge and runtime · tank). Don't make the card taller: that reshapes upstream's drawer.
