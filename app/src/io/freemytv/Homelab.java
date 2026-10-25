@@ -1,5 +1,6 @@
 package io.freemytv;
 
+import android.os.SystemClock;
 import android.text.TextUtils;
 
 import org.json.JSONArray;
@@ -42,7 +43,8 @@ final class Homelab {
 
     /** One good answer. Never changed once made: the screen draws it while the next one is fetched. */
     static final class Data {
-        long at, updated;   // when it arrived (the TV's clock) and when the aggregator made it (its clock), epoch ms
+        long at;    // when it arrived: SystemClock.elapsedRealtime(), so the time since needs no settable clock
+        long age;   // how old the numbers were when they arrived, ms (see parse)
         int cpu = NONE, mem = NONE, tank = NONE;
         final List<Node> nodes = new ArrayList<>();
         int guests, running;
@@ -58,10 +60,10 @@ final class Homelab {
     private volatile long triedAt;
     private String lastError = "";  // only the fetching thread uses it
 
-    /** Nothing yet, the last fetch failed, or the aggregator made the answer over 3 minutes ago. */
-    boolean stale(long now) {
+    /** Nothing yet, the last fetch failed, or the numbers are over 3 minutes old. */
+    boolean stale() {
         Data d = data;
-        return d == null || failed || now - d.updated > STALE_AFTER;
+        return d == null || failed || d.age + SystemClock.elapsedRealtime() - d.at > STALE_AFTER;
     }
 
     /**
@@ -71,7 +73,7 @@ final class Homelab {
     void refreshIfStale(Executor io, Runnable changed) {
         if (!ON) return;
         long now = System.currentTimeMillis();
-        boolean stale = stale(now);
+        boolean stale = stale();
         if (stale != staleShown) {
             staleShown = stale;
             changed.run();
@@ -83,7 +85,9 @@ final class Homelab {
         triedAt = now;
         io.execute(() -> {
             try {
-                data = parse(get(Config.HOMELAB_URL.trim()), System.currentTimeMillis());
+                long[] served = {0};
+                String body = get(Config.HOMELAB_URL.trim(), served);
+                data = parse(body, served[0], System.currentTimeMillis());
                 failed = false;
                 lastError = "";
             } catch (Exception | StackOverflowError e) {   // never a crash: 3 in 5 minutes send the TV back to stock
@@ -93,22 +97,28 @@ final class Homelab {
                 lastError = error;
             } finally {
                 fetching = false;
-                staleShown = stale(System.currentTimeMillis());
+                staleShown = stale();
                 changed.run();
             }
         });
     }
 
-    /** JSON version 1 (HOMELAB.md §5). Fields it doesn't know are ignored; a missing or null section is left empty. */
-    static Data parse(String body, long now) throws Exception {
+    /**
+     * JSON version 1 (HOMELAB.md §5). Fields it doesn't know are ignored; a missing or null section is left empty.
+     * `served` is the answer's HTTP Date header (0 when there's none), `now` the TV's clock when it arrived.
+     */
+    static Data parse(String body, long served, long now) throws Exception {
         JSONObject o = new JSONObject(body);
         int version = o.optInt("version", 0);
         // A breaking change bumps the version: refuse it (stale, last good numbers kept) rather than misread it.
         if (version != 1) throw new IOException("version " + version + ", this build reads 1");
         Data d = new Data();
-        d.at = now;
+        d.at = SystemClock.elapsedRealtime();
         // "2026-10-24T19:40:00-04:00" (Go's RFC 3339). Without it there's no telling how old the numbers are.
-        d.updated = OffsetDateTime.parse(text(o, "updated")).toInstant().toEpochMilli();
+        long updated = OffsetDateTime.parse(text(o, "updated")).toInstant().toEpochMilli();
+        // Their age on one clock: the Date header comes from NPM, on the aggregator's own machine (LXC 100 runs on
+        // pve's kernel clock), so a TV clock that's a few minutes off doesn't matter. Without it, the TV's clock does.
+        d.age = (served > 0 ? served : now) - updated;
         JSONObject overall = o.optJSONObject("overall");
         if (overall != null) {
             d.cpu = number(overall, "cpu_pct");
@@ -164,7 +174,8 @@ final class Homelab {
         return v instanceof String ? (String) v : "";
     }
 
-    private static String get(String url) throws IOException {
+    /** The answer's body; `served` gets its HTTP Date header (epoch ms, 0 when there's none). */
+    private static String get(String url, long[] served) throws IOException {
         URLConnection u = new URL(url).openConnection();
         // HTTPS only (HOMELAB.md §4): NPM's certificate is checked as for any site, and Android refuses cleartext.
         if (!(u instanceof HttpsURLConnection)) throw new IOException("homelab_url must start with https://");
@@ -176,6 +187,7 @@ final class Homelab {
         c.setRequestProperty("Accept", "application/json");
         try {
             if (c.getResponseCode() != 200) throw new IOException("HTTP " + c.getResponseCode());
+            served[0] = c.getDate();
             try (InputStream in = c.getInputStream()) {
                 ByteArrayOutputStream out = new ByteArrayOutputStream();
                 byte[] buffer = new byte[8192];

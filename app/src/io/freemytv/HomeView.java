@@ -1820,7 +1820,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             labMade = false;
         }
         Homelab.Data d = data.homelab.data;
-        boolean stale = data.homelab.stale(System.currentTimeMillis());
+        boolean stale = data.homelab.stale();
         if (labMade && d == labData && stale == labStale && labGeneration == Ui.generation && labLeft == r.left
                 && labRight == r.right) return;
         labMade = true;
@@ -2753,7 +2753,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             case WIDGETS:
                 if (i == 0) return weatherText();
                 if (!Homelab.ON) return quotesText();
-                return Homelab.spoken(data.homelab.data, data.homelab.stale(System.currentTimeMillis()));
+                return Homelab.spoken(data.homelab.data, data.homelab.stale());
             default: return "";
         }
     }
