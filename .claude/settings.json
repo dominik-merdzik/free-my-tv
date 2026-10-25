@@ -1,0 +1,46 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(./build.sh)",
+      "Bash(adb devices)",
+      "Bash(adb connect 10.0.0.218:5555)",
+      "Bash(adb disconnect 10.0.0.218:5555)",
+      "Bash(adb install -r FreeMyTV.apk)",
+      "Bash(adb shell getprop:*)",
+      "Bash(adb shell dumpsys:*)",
+      "Bash(adb shell appops get:*)",
+      "Bash(adb shell pm list:*)",
+      "Bash(adb logcat -d:*)",
+      "Bash(go build:*)",
+      "Bash(go test:*)",
+      "Bash(go vet:*)",
+      "Bash(go run:*)",
+      "Bash(go mod:*)",
+      "Bash(gofmt:*)",
+      "Bash(curl -s localhost:8099/:*)",
+      "Bash(git status)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git checkout -b:*)",
+      "Bash(git switch:*)",
+      "Bash(git fetch:*)"
+    ],
+    "deny": [
+      "Bash(adb shell pm uninstall:*)",
+      "Bash(adb shell pm disable:*)",
+      "Bash(adb shell pm disable-user:*)",
+      "Bash(adb shell pm clear:*)",
+      "Bash(adb shell settings put:*)",
+      "Bash(adb shell reboot:*)",
+      "Bash(adb reboot:*)",
+      "Bash(adb uninstall:*)",
+      "Bash(rm freemytv.keystore)",
+      "Bash(sudo:*)",
+      "Read(./homelab/aggregator/.env)",
+      "Read(./freemytv.keystore)",
+      "Read(./config.properties)"
+    ]
+  }
+}
