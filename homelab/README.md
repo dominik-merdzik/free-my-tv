@@ -6,7 +6,7 @@ polls it every minute while the home screen is showing.
 
 ```
 Proxmox API (any node) ─┐
-NUT on pve :3493 ───────┼─► aggregator :8099 ─► NPM ─► https://stats.dominiktm.net/stats ◄── TV
+NUT on pve :3493 ───────┼─► aggregator :8099 ─► NPM ─► https://labstats.dominiktm.net/stats ◄── TV
 /sys/class/hwmon ───────┘
 ```
 
