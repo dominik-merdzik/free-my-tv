@@ -143,6 +143,8 @@ final class HomeData {
     final double[] changes = {Double.NaN, Double.NaN, Double.NaN, Double.NaN};
     volatile long pricesAt, weatherAt;
     volatile Weather weather = new Weather();
+    /** This fork (HOMELAB.md): the drawer's Homelab card. */
+    final Homelab homelab = new Homelab();
 
     private final SharedPreferences cache;
     private final ExecutorService io = Executors.newSingleThreadExecutor();
@@ -225,6 +227,14 @@ final class HomeData {
                 }
             });
         }
+    }
+
+    /**
+     * The Homelab card's numbers, every 60 s. Only the home screen calls this, not the screensaver: only the drawer
+     * shows them. `changed` runs on the main thread after each try, good or failed (a failure makes the card stale).
+     */
+    void refreshHomelab(Runnable changed) {
+        homelab.refreshIfStale(io, () -> main.post(changed));
     }
 
     private static boolean failedRecently(long at, long now) {
