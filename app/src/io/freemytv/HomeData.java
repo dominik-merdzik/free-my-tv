@@ -2,6 +2,8 @@ package io.freemytv;
 
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.net.ConnectivityManager;
+import android.net.Network;
 import android.os.Handler;
 import android.os.Looper;
 
@@ -23,6 +25,7 @@ import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.SimpleTimeZone;
 import java.util.TimeZone;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -35,16 +38,32 @@ import java.util.concurrent.Executors;
 final class HomeData {
     static final String[] COINS = {"BTC", "ETH", "SOL", "USDT"};
     static final String[] COIN_NAMES = {"Bitcoin", "Ethereum", "Solana", "Dollar"};
-    private static final String CURRENCY = Config.CURRENCY.trim().toUpperCase(Locale.ROOT);
+    private static final String CURRENCY = Place.currency();
     /** Binance has no pairs in some currencies (INR...) and then refuses the whole request: prices go in dollars instead. */
     private static volatile boolean inDollars;
+    /**
+     * A currency Binance lists no pairs in (COP, MXN...): the coins are fetched in USDT and converted with the local
+     * USDT pair (USDTCOP), which also gives the dollar card its rate. Dollars only when that pair is missing too.
+     */
+    private static volatile boolean inFx;
 
     /** Binance quotes dollars as USDT. */
     private static String quote() {
-        return CURRENCY.equals("USD") || inDollars ? "USDT" : CURRENCY;
+        return CURRENCY.equals("USD") || inFx || inDollars ? "USDT" : CURRENCY;
     }
-    private static final String WEATHER_QUERY = "&current=temperature_2m,weather_code,is_day&daily=temperature_2m_max,temperature_2m_min,sunrise,sunset"
-            + "&hourly=temperature_2m,weather_code,is_day&timezone=auto&forecast_days=2";
+
+    /** The pair that turns USDT into the local currency (USDTCOP for Colombia). */
+    private static String fxSymbol() { return "USDT" + CURRENCY; }
+
+    /** The currency and how it's quoted: a cached body from another one must be fetched again, not shown. */
+    private static String currencyKey() {
+        return CURRENCY + (inFx ? "#fx" : inDollars ? "#usd" : "");
+    }
+
+    // Both forecasts in one answer, the next 48 hours and today plus 5 days: Home Settings → Forecast switches without
+    // asking again, and offline too.
+    private static final String WEATHER_QUERY = "&current=temperature_2m,weather_code,is_day&daily=temperature_2m_max,temperature_2m_min,sunrise,sunset,weather_code"
+            + "&hourly=temperature_2m,weather_code,is_day&timezone=auto&forecast_days=6&forecast_hours=48";
 
     private static String weatherPlace() {
         return Prefs.latitude() + "," + Prefs.longitude();
@@ -56,28 +75,36 @@ final class HomeData {
     private static final long PRICES_EVERY = 5 * 60_000L, WEATHER_EVERY = 30 * 60_000L;
     interface Listener { void onData(); }
 
-    /** BTC, ETH and SOL; in Brazilian reais also the dollar (USDT/BRL), which Binance doesn't list for most currencies. */
+    /** BTC, ETH and SOL; in Brazilian reais or converted from USDT, also the dollar (USDT in local currency). */
     static int coinCount() {
         return Prefs.quotes() ? active().length : 0;
     }
 
+    /** The dollar card shows the USDT rate when there is one to show (reais, or a currency converted from USDT). */
+    static boolean dollarRow() {
+        return !inDollars && (CURRENCY.equals("BRL") || inFx);
+    }
+
     private static volatile int[] activeCoins;
     private static volatile int activeVersion = -1;
-    private static volatile boolean activeInDollars;
+    private static volatile boolean activeInDollars, activeInFx;
 
     /** Indexes in COINS of the coins the user has on (and that Binance lists in this currency). */
     static int[] active() {
         int[] a = activeCoins;
-        boolean dollars = inDollars;
-        if (a != null && activeVersion == Prefs.version && activeInDollars == dollars) return a;
+        boolean dollars = inDollars, fx = inFx;
+        if (a != null && activeVersion == Prefs.version && activeInDollars == dollars && activeInFx == fx) return a;
         int n = 0;
         int[] tmp = new int[COINS.length];
-        // The dollar only in reais, not in dollars: USDTUSDT isn't a pair, and Binance would refuse the whole request.
-        for (int i = 0; i < COINS.length; i++) if (Prefs.coin(i) && (i < 3 || CURRENCY.equals("BRL") && !dollars)) tmp[n++] = i;
+        // The dollar only where there's a rate for it, not in dollars: USDTUSDT isn't a pair, and Binance would
+        // refuse the whole request.
+        boolean dollar = dollarRow();
+        for (int i = 0; i < COINS.length; i++) if (Prefs.coin(i) && (i < 3 || dollar)) tmp[n++] = i;
         a = java.util.Arrays.copyOf(tmp, n);
         activeCoins = a;
         activeVersion = Prefs.version;
         activeInDollars = dollars;
+        activeInFx = fx;
         return a;
     }
 
@@ -93,27 +120,56 @@ final class HomeData {
         return i == 3 ? Ui.tr("Dollar") : COIN_NAMES[i];
     }
 
-    /** Binance.com refuses the US (HTTP 451); Binance.US answers the same call in dollars. */
-    private static final String[] PRICE_HOSTS = {"https://api.binance.com", "https://api.binance.us"};
+    /** 0 = raining now, > 0 = hours until the next rain, -1 = none in the next hours. */
+    static int rainInHours(Weather w, long now) {
+        if (isRain(w.code)) return 0;
+        for (int i = 0; i < w.hourCode.size() && i < w.hours.size(); i++) {
+            if (!isRain(w.hourCode.get(i))) continue;
+            return Math.max(1, Math.round((w.hours.get(i) - now) / 3_600_000f));
+        }
+        return -1;
+    }
+
+    /** WMO drizzle, rain, showers and thunderstorms (snow is not rain). */
+    private static boolean isRain(int code) {
+        return (code >= 51 && code <= 67) || (code >= 80 && code <= 82) || code >= 95;
+    }
+
+    /**
+     * Binance.com refuses the US (HTTP 451); Binance.US answers the same call in dollars. data-api.binance.vision is
+     * Binance's own address for public market data, with Binance.com's pairs on another domain and certificate chain: it
+     * answers where a network blocks or intercepts api.binance.com (a TCL and a Mi Box on one network: "Trust anchor for
+     * certification path not found", #375). A refusal skips it: the US keeps Binance.US's dollars.
+     */
+    private static final String VISION = "https://data-api.binance.vision", US = "https://api.binance.us";
+    private static final String[] PRICE_HOSTS = {"https://api.binance.com", VISION, US};
 
     private static String pricesPath() {
         StringBuilder symbols = new StringBuilder();
         int[] coins = active();
-        for (int i = 0; i < coins.length; i++) symbols.append(i == 0 ? "" : ",").append("%22").append(COINS[coins[i]]).append(quote()).append("%22");
+        for (int i = 0; i < coins.length; i++) {
+            if (inFx && coins[i] == 3) continue;   // the USDT rate below is the dollar's price
+            symbols.append(symbols.length() == 0 ? "" : ",").append("%22").append(COINS[coins[i]]).append(quote()).append("%22");
+        }
+        if (inFx) symbols.append(symbols.length() == 0 ? "" : ",").append("%22").append(fxSymbol()).append("%22");
         return "/api/v3/ticker/24hr?type=MINI&symbols=%5B" + symbols + "%5D";
     }
 
     private static String getPrices() throws IOException {
         IOException failed = null;
         for (String host : PRICE_HOSTS) {
+            boolean refused = failed != null && "HTTP 451".equals(failed.getMessage());
+            if (refused && host.equals(VISION)) continue;
             try {
                 return get(host + pricesPath());
             } catch (IOException e) {
+                boolean unlisted = "HTTP 400".equals(e.getMessage());
                 // Binance.US has only dollar pairs: its error counts only where Binance.com refuses the US (HTTP 451).
-                // After a timeout or a 5xx there, its HTTP 400 would put the prices in dollars for good.
-                if (failed == null || "HTTP 451".equals(failed.getMessage())) failed = e;
+                // After a timeout or a 5xx there, its HTTP 400 would put the prices in dollars for good. The other two
+                // list the same pairs, so their 400 counts.
+                if (failed == null || refused || (unlisted && !host.equals(US))) failed = e;
                 // A pair Binance doesn't list (HTTP 400) isn't a refusal: the caller falls back to dollars instead.
-                if ("HTTP 400".equals(e.getMessage())) break;
+                if (unlisted) break;
             }
         }
         throw failed;
@@ -129,6 +185,11 @@ final class HomeData {
         final List<Double> hourTemp = new ArrayList<>();
         final List<Integer> hourCode = new ArrayList<>();
         final List<Boolean> hourDay = new ArrayList<>();
+        // The next 5 days (from tomorrow): noon of each day on the TV's clock, high, low and code.
+        final List<Long> days = new ArrayList<>();
+        final List<Double> dayMax = new ArrayList<>();
+        final List<Double> dayMin = new ArrayList<>();
+        final List<Integer> dayCode = new ArrayList<>();
     }
 
     private static HomeData instance;
@@ -158,8 +219,9 @@ final class HomeData {
     private HomeData(Context c) {
         cache = c.getSharedPreferences("homedata", Context.MODE_PRIVATE);
         inDollars = CURRENCY.equals(cache.getString("dollarsFor", ""));
+        inFx = !inDollars && CURRENCY.equals(cache.getString("fxFor", ""));
         try {
-            if (Prefs.quotes()) {
+            if (Prefs.quotes() && currencyKey().equals(cache.getString("pricesFor", ""))) {
                 String p = cache.getString("prices", null);
                 if (p != null) parsePrices(p);
                 pricesAt = cache.getLong("pricesAt", 0);
@@ -168,10 +230,25 @@ final class HomeData {
             // The cached forecast is for the city it was fetched for; another city means fetch again.
             if (w != null && weatherPlace().equals(cache.getString("weatherPlace", ""))) {
                 weather = parseWeather(w);
-                weatherAt = cache.getLong("weatherAt", 0);
+                // Fetched with another query (an older version): shown, and fetched again now.
+                weatherAt = WEATHER_QUERY.equals(cache.getString("weatherQuery", "")) ? cache.getLong("weatherAt", 0) : 0;
                 weatherFor = weatherPlace();
             }
         } catch (Exception ignored) {}
+        // As for the picks: a fetch made before the Wi-Fi is up (the TV just started) is tried again when it comes.
+        try {
+            ConnectivityManager cm = c.getSystemService(ConnectivityManager.class);
+            if (cm != null) cm.registerDefaultNetworkCallback(new ConnectivityManager.NetworkCallback() {
+                @Override public void onAvailable(Network network) {
+                    if (pricesFailedAt == 0 && weatherFailedAt == 0) return;
+                    pricesFailedAt = 0;
+                    weatherFailedAt = 0;
+                    main.postDelayed(HomeData.this::refreshIfStale, 2000);
+                }
+            });
+        } catch (RuntimeException e) {
+            AppLog.w("weather: no network callback: " + e.getMessage());
+        }
     }
 
     void addListener(Listener l) { if (!listeners.contains(l)) listeners.add(l); }
@@ -186,18 +263,36 @@ final class HomeData {
             io.execute(() -> {
                 try {
                     String body;
-                    try {
-                        body = getPrices();
-                    } catch (IOException e) {
-                        if (inDollars || CURRENCY.equals("USD") || !"HTTP 400".equals(e.getMessage())) throw e;
+                    // Binance refuses the whole request for a currency it lists no pairs in (HTTP 400): the coins are
+                    // fetched in USDT and converted with USDT<currency> first, and only in dollars when that's missing too.
+                    while (true) {
+                        try {
+                            body = getPrices();
+                            break;
+                        } catch (IOException e) {
+                            if (inDollars || CURRENCY.equals("USD") || !"HTTP 400".equals(e.getMessage())) throw e;
+                            if (!inFx) {
+                                inFx = true;
+                                AppLog.w("prices: no " + CURRENCY + " pairs, converting from USDT (" + fxSymbol() + ")");
+                            } else {
+                                inFx = false;   // dollars: the next request no longer asks for USDT<currency>
+                                inDollars = true;
+                                cache.edit().putString("dollarsFor", CURRENCY).apply();
+                                AppLog.w("prices: no " + CURRENCY + " or " + fxSymbol() + " pairs, using dollars");
+                            }
+                        }
+                    }
+                    if (!inDollars && !inFx && !CURRENCY.equals("USD") && halted(body, System.currentTimeMillis())) {
+                        // Not saved, unlike a currency Binance doesn't list: the market may open again (next start).
                         inDollars = true;
-                        cache.edit().putString("dollarsFor", CURRENCY).apply();
-                        AppLog.w("prices: Binance has no " + CURRENCY + " pairs, using dollars");
+                        AppLog.w("prices: Binance has halted its " + CURRENCY + " pairs, using dollars");
                         body = getPrices();
                     }
                     parsePrices(body);
                     pricesAt = System.currentTimeMillis();
-                    cache.edit().putString("prices", body).putLong("pricesAt", pricesAt).apply();
+                    cache.edit().putString("prices", body).putLong("pricesAt", pricesAt)
+                            .putString("pricesFor", currencyKey())
+                            .putString("fxFor", inFx ? CURRENCY : cache.getString("fxFor", "")).apply();
                     notifyListeners();
                 } catch (Exception e) {
                     pricesFailedAt = System.currentTimeMillis();
@@ -217,7 +312,8 @@ final class HomeData {
                     weather = parseWeather(body);
                     weatherAt = System.currentTimeMillis();
                     weatherFor = place;
-                    cache.edit().putString("weather", body).putLong("weatherAt", weatherAt).putString("weatherPlace", place).apply();
+                    cache.edit().putString("weather", body).putLong("weatherAt", weatherAt).putString("weatherPlace", place)
+                            .putString("weatherQuery", WEATHER_QUERY).apply();
                     notifyListeners();
                 } catch (Exception e) {
                     weatherFailedAt = System.currentTimeMillis();
@@ -245,13 +341,33 @@ final class HomeData {
         main.post(() -> { for (Listener l : new ArrayList<>(listeners)) l.onData(); });
     }
 
+    /**
+     * A pair with no trade for a day: Binance halted it and keeps answering with the frozen last price (its AUD pairs
+     * since 2026-10-06, BTC at AUD 37,000 for AUD 115,000).
+     */
+    static boolean halted(String body, long now) throws Exception {
+        JSONArray list = new JSONArray(body);
+        for (int i = 0; i < list.length(); i++) {
+            long close = list.getJSONObject(i).optLong("closeTime", 0);
+            if (close > 0 && now - close > 24 * 60 * 60_000L) return true;
+        }
+        return false;
+    }
+
     private void parsePrices(String body) throws Exception {
         JSONArray list = new JSONArray(body);
         String quote = quote();
         int found = 0;
+        double fx = Double.NaN, fxOpen = Double.NaN;
+        boolean[] got = new boolean[COINS.length];
         for (int i = 0; i < list.length(); i++) {
             JSONObject o = list.getJSONObject(i);
             String symbol = o.getString("symbol");
+            if (inFx && symbol.equals(fxSymbol())) {
+                fx = Double.parseDouble(o.optString("lastPrice", o.optString("price", "NaN")));
+                fxOpen = Double.parseDouble(o.optString("openPrice", "NaN"));
+                continue;
+            }
             for (int k = 0; k < COINS.length; k++) {
                 if (!symbol.equals(COINS[k] + quote)) continue;
                 found++;
@@ -259,14 +375,26 @@ final class HomeData {
                 double open = Double.parseDouble(o.optString("openPrice", "NaN"));
                 prices[k] = last;
                 changes[k] = open > 0 ? (last - open) / open * 100 : Double.NaN;
+                got[k] = true;
             }
         }
-        if (found == 0) pricesAt = 0;   // cached in another currency (config changed): fetch again
+        if (inFx) {
+            // The coins came in USDT: the local pair turns them into the currency (and is the dollar card's rate).
+            if (Double.isNaN(fx) || fx <= 0) throw new Exception("no " + fxSymbol() + " rate");
+            for (int k = 0; k < 3; k++) if (got[k]) prices[k] *= fx;
+            prices[3] = fx;
+            changes[3] = fxOpen > 0 ? (fx - fxOpen) / fxOpen * 100 : Double.NaN;
+        } else if (found == 0) {
+            pricesAt = 0;   // cached in another currency (config changed): fetch again
+        }
     }
 
     private static Weather parseWeather(String body) throws Exception {
         JSONObject o = new JSONObject(body);
-        TimeZone zone = TimeZone.getTimeZone(o.optString("timezone", TimeZone.getDefault().getID()));
+        // Open-Meteo writes every time at the place's offset of now, even past a DST change (Berlin's sunrise after the
+        // change still reads 07:51 at GMT+2): read them at that offset, as LG and Samsung do, not by the zone's rules.
+        TimeZone zone = o.has("utc_offset_seconds") ? new SimpleTimeZone(o.getInt("utc_offset_seconds") * 1000, "GMT")
+                : TimeZone.getTimeZone(o.optString("timezone", TimeZone.getDefault().getID()));
         Weather w = new Weather();
         JSONObject current = o.getJSONObject("current");
         w.temp = current.getDouble("temperature_2m");
@@ -292,6 +420,18 @@ final class HomeData {
                 w.hourCode.add(codes.getInt(i));
                 w.hourDay.add(days == null || days.optInt(i, 1) == 1);
             }
+        }
+        JSONArray dates = daily.getJSONArray("time"), highs = daily.getJSONArray("temperature_2m_max"),
+                lows = daily.getJSONArray("temperature_2m_min"), codes = daily.optJSONArray("weather_code");
+        long now = System.currentTimeMillis();
+        for (int i = 0; codes != null && i < dates.length() && w.days.size() < 5; i++) {
+            String date = dates.getString(i);
+            // Only days that haven't started at the city: today, and past days in a forecast kept offline, are left out.
+            if (localTime(date + "T12:00", zone) - 12 * 3600_000L <= now) continue;
+            w.days.add(localTime(date + "T12:00", TimeZone.getDefault()));   // its noon on the TV's clock: named right anywhere
+            w.dayMax.add(highs.optDouble(i));
+            w.dayMin.add(lows.optDouble(i));
+            w.dayCode.add(codes.optInt(i, -1));
         }
         return w;
     }
@@ -460,7 +600,21 @@ final class HomeData {
     }
 
     static String hour(long at) {
-        return Ui.once("hour", at, () -> Ui.datePattern("format|h a").format(at));
+        return Ui.hour(at);
+    }
+
+    /** "Seg", "Mon", "Lun", "Mo", "Пн": the short day of the week, capitalized and without the abbreviation's dot. */
+    static String weekday(long at) {
+        return Ui.once("weekday", at, () -> {
+            String s = Ui.datePattern("format|EEE").format(at);
+            if (s.endsWith(".")) s = s.substring(0, s.length() - 1);
+            return s.isEmpty() ? s : s.substring(0, 1).toUpperCase(Ui.locale()) + s.substring(1);
+        });
+    }
+
+    /** "Sunday", "domingo", "Sonntag": a day's full name, for TalkBack. */
+    static String weekdayName(long at) {
+        return Ui.once("weekdayName", at, () -> new SimpleDateFormat("EEEE", Ui.locale()).format(new java.util.Date(at)));
     }
 
     /** How long ago the data was fetched, if it's stale (no internet): "12 min ago". */
