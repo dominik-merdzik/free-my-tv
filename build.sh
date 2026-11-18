@@ -107,6 +107,7 @@ for key in immich_api_key home_assistant_token; do
 done
 # Home Assistant: with an address and entities, Home Settings gets its Home Assistant row; without, no row at all.
 HA=false; [ -n "$(prop home_assistant_url '')" ] && [ -n "$(prop home_assistant_entities '')" ] && HA=true
+HOMELAB=false; [ "$(prop show_homelab false)" = "true" ] && HOMELAB=true
 
 rm -rf out && mkdir -p out/gen/io/freemytv out/classes
 cat > out/gen/io/freemytv/Config.java <<EOF
@@ -141,6 +142,8 @@ final class Config {
     static final boolean GENERIC = $GENERIC;   // built with --generic, as the APK on GitHub's releases (Updates)
     static final boolean OPEN_IN_STREMIO = $STREMIO;
     static final boolean OPEN_IN_NUVIO = $NUVIO;
+    static final boolean SHOW_HOMELAB = $HOMELAB;
+    static final String HOMELAB_URL = "$(prop homelab_url '')";
 }
 EOF
 
